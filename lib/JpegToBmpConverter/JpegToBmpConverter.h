@@ -11,5 +11,10 @@ class JpegToBmpConverter {
                                         unsigned char* pBytes_actually_read, void* pCallback_data);
 
  public:
-  static bool jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut);
+  enum class ScaleMode {
+    FIT,  // Scale to fit within target dimensions (may have letterbox bars)
+    FILL  // Scale to fill target dimensions completely (crops overflow)
+  };
+
+  static bool jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut, ScaleMode scaleMode = ScaleMode::FIT);
 };

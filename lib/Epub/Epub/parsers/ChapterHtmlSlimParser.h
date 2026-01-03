@@ -7,16 +7,20 @@
 #include <memory>
 
 #include "../ParsedText.h"
+#include "../blocks/ImageBlock.h"
 #include "../blocks/TextBlock.h"
 
 class Page;
 class GfxRenderer;
+class Epub;
 
 #define MAX_WORD_SIZE 200
 
 class ChapterHtmlSlimParser {
   const std::string& filepath;
   GfxRenderer& renderer;
+  std::shared_ptr<Epub> epub;          // EPUB for image extraction
+  std::string chapterPath;             // Path within EPUB for resolving relative image paths
   std::function<void(std::unique_ptr<Page>)> completePageFn;
   std::function<void(int)> progressFn;  // Progress callback (0-100)
   int depth = 0;
@@ -39,20 +43,24 @@ class ChapterHtmlSlimParser {
 
   void startNewTextBlock(TextBlock::Style style);
   void makePages();
+  void processImageTag(const XML_Char** atts);
+  void addImageToPage(std::shared_ptr<ImageBlock> imageBlock);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
   static void XMLCALL endElement(void* userData, const XML_Char* name);
 
  public:
-  explicit ChapterHtmlSlimParser(const std::string& filepath, GfxRenderer& renderer, const int fontId,
-                                 const float lineCompression, const bool extraParagraphSpacing,
-                                 const uint8_t paragraphAlignment, const uint16_t viewportWidth,
-                                 const uint16_t viewportHeight,
+  explicit ChapterHtmlSlimParser(const std::string& filepath, GfxRenderer& renderer, std::shared_ptr<Epub> epub,
+                                 std::string chapterPath, const int fontId, const float lineCompression,
+                                 const bool extraParagraphSpacing, const uint8_t paragraphAlignment,
+                                 const uint16_t viewportWidth, const uint16_t viewportHeight,
                                  const std::function<void(std::unique_ptr<Page>)>& completePageFn,
                                  const std::function<void(int)>& progressFn = nullptr)
       : filepath(filepath),
         renderer(renderer),
+        epub(std::move(epub)),
+        chapterPath(std::move(chapterPath)),
         fontId(fontId),
         lineCompression(lineCompression),
         extraParagraphSpacing(extraParagraphSpacing),

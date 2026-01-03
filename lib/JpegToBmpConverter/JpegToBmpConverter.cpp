@@ -428,7 +428,7 @@ unsigned char JpegToBmpConverter::jpegReadCallback(unsigned char* pBuf, const un
 }
 
 // Core function: Convert JPEG file to 2-bit BMP
-bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut) {
+bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut, const ScaleMode scaleMode) {
   Serial.printf("[%lu] [JPG] Converting JPEG to BMP\n", millis());
 
   // Setup context for picojpeg callback
@@ -463,28 +463,56 @@ bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut) {
   uint32_t scaleX_fp = 65536;  // 1.0 in 16.16 fixed point
   uint32_t scaleY_fp = 65536;
   bool needsScaling = false;
+  int cropOffsetX = 0;  // Source pixel offset for center-cropping (FILL mode)
+  int cropOffsetY = 0;
 
-  if (USE_PRESCALE && (imageInfo.m_width > TARGET_MAX_WIDTH || imageInfo.m_height > TARGET_MAX_HEIGHT)) {
-    // Calculate scale to fit within target dimensions while maintaining aspect ratio
+  const bool useFillMode = (scaleMode == ScaleMode::FILL);
+
+  if (USE_PRESCALE && (imageInfo.m_width > TARGET_MAX_WIDTH || imageInfo.m_height > TARGET_MAX_HEIGHT || useFillMode)) {
     const float scaleToFitWidth = static_cast<float>(TARGET_MAX_WIDTH) / imageInfo.m_width;
     const float scaleToFitHeight = static_cast<float>(TARGET_MAX_HEIGHT) / imageInfo.m_height;
-    const float scale = (scaleToFitWidth < scaleToFitHeight) ? scaleToFitWidth : scaleToFitHeight;
 
-    outWidth = static_cast<int>(imageInfo.m_width * scale);
-    outHeight = static_cast<int>(imageInfo.m_height * scale);
+    float scale;
+    if (useFillMode) {
+      // FILL mode: use LARGER scale factor so image fills the target completely
+      // This will crop the overflow (center-crop)
+      scale = (scaleToFitWidth > scaleToFitHeight) ? scaleToFitWidth : scaleToFitHeight;
 
-    // Ensure at least 1 pixel
-    if (outWidth < 1) outWidth = 1;
-    if (outHeight < 1) outHeight = 1;
+      // Output is exactly target dimensions
+      outWidth = TARGET_MAX_WIDTH;
+      outHeight = TARGET_MAX_HEIGHT;
+
+      // Calculate scaled source dimensions (before cropping)
+      const int scaledSrcWidth = static_cast<int>(imageInfo.m_width * scale);
+      const int scaledSrcHeight = static_cast<int>(imageInfo.m_height * scale);
+
+      // Calculate crop offsets in scaled space, then convert to source space
+      // cropOffset (in source pixels) = (scaledSize - targetSize) / 2 / scale
+      cropOffsetX = static_cast<int>((scaledSrcWidth - TARGET_MAX_WIDTH) / scale / 2);
+      cropOffsetY = static_cast<int>((scaledSrcHeight - TARGET_MAX_HEIGHT) / scale / 2);
+
+      Serial.printf("[%lu] [JPG] FILL mode: %dx%d -> %dx%d (crop offset: %d,%d)\n", millis(), imageInfo.m_width,
+                    imageInfo.m_height, outWidth, outHeight, cropOffsetX, cropOffsetY);
+    } else {
+      // FIT mode: use SMALLER scale factor so image fits within target
+      scale = (scaleToFitWidth < scaleToFitHeight) ? scaleToFitWidth : scaleToFitHeight;
+
+      outWidth = static_cast<int>(imageInfo.m_width * scale);
+      outHeight = static_cast<int>(imageInfo.m_height * scale);
+
+      // Ensure at least 1 pixel
+      if (outWidth < 1) outWidth = 1;
+      if (outHeight < 1) outHeight = 1;
+
+      Serial.printf("[%lu] [JPG] FIT mode: %dx%d -> %dx%d\n", millis(), imageInfo.m_width, imageInfo.m_height, outWidth,
+                    outHeight);
+    }
 
     // Calculate fixed-point scale factors (source pixels per output pixel)
     // scaleX_fp = (srcWidth << 16) / outWidth
     scaleX_fp = (static_cast<uint32_t>(imageInfo.m_width) << 16) / outWidth;
     scaleY_fp = (static_cast<uint32_t>(imageInfo.m_height) << 16) / outHeight;
     needsScaling = true;
-
-    Serial.printf("[%lu] [JPG] Pre-scaling %dx%d -> %dx%d (fit to %dx%d)\n", millis(), imageInfo.m_width,
-                  imageInfo.m_height, outWidth, outHeight, TARGET_MAX_WIDTH, TARGET_MAX_HEIGHT);
   }
 
   // Write BMP header with output dimensions
@@ -643,13 +671,21 @@ bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut) {
       } else {
         // Fixed-point area averaging for exact fit scaling
         // For each output pixel X, accumulate source pixels that map to it
-        // srcX range for outX: [outX * scaleX_fp >> 16, (outX+1) * scaleX_fp >> 16)
+        // Apply crop offset for FILL mode (cropOffsetX is 0 for FIT mode)
         const uint8_t* srcRow = mcuRowBuffer + bufferY * imageInfo.m_width;
 
+        // Calculate effective source Y (relative to crop region)
+        const int effectiveSrcY = y - cropOffsetY;
+
+        // Skip rows before the crop region (only applies to FILL mode)
+        if (effectiveSrcY < 0) {
+          continue;
+        }
+
         for (int outX = 0; outX < outWidth; outX++) {
-          // Calculate source X range for this output pixel
-          const int srcXStart = (static_cast<uint32_t>(outX) * scaleX_fp) >> 16;
-          const int srcXEnd = (static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16;
+          // Calculate source X range for this output pixel (with crop offset)
+          const int srcXStart = cropOffsetX + ((static_cast<uint32_t>(outX) * scaleX_fp) >> 16);
+          const int srcXEnd = cropOffsetX + ((static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16);
 
           // Accumulate all source pixels in this range
           int sum = 0;
@@ -670,8 +706,8 @@ bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut) {
         }
 
         // Check if we've crossed into the next output row
-        // Current source Y in fixed point: y << 16
-        const uint32_t srcY_fp = static_cast<uint32_t>(y + 1) << 16;
+        // Use effective source Y (relative to crop region)
+        const uint32_t srcY_fp = static_cast<uint32_t>(effectiveSrcY + 1) << 16;
 
         // Output row when source Y crosses the boundary
         if (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {

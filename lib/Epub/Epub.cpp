@@ -310,7 +310,7 @@ bool Epub::generateCoverBmp() const {
       coverJpg.close();
       return false;
     }
-    const bool success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp);
+    const bool success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp, JpegToBmpConverter::ScaleMode::FILL);
     coverJpg.close();
     coverBmp.close();
     SdMan.remove(coverJpgTempPath.c_str());

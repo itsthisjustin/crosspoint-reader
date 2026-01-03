@@ -139,9 +139,35 @@ void SleepActivity::renderDefaultSleepScreen() const {
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
-  int x, y;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
+
+  // Fast path for exact-size images (e.g., FILL mode covers)
+  if (bitmap.getWidth() == pageWidth && bitmap.getHeight() == pageHeight) {
+    renderer.clearScreen();
+    renderer.drawBitmap(bitmap, 0, 0, pageWidth, pageHeight);
+    renderer.displayBuffer(EInkDisplay::HALF_REFRESH);
+
+    if (bitmap.hasGreyscale()) {
+      bitmap.rewindToData();
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+      renderer.drawBitmap(bitmap, 0, 0, pageWidth, pageHeight);
+      renderer.copyGrayscaleLsbBuffers();
+
+      bitmap.rewindToData();
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+      renderer.drawBitmap(bitmap, 0, 0, pageWidth, pageHeight);
+      renderer.copyGrayscaleMsbBuffers();
+
+      renderer.displayGrayBuffer();
+      renderer.setRenderMode(GfxRenderer::BW);
+    }
+    return;
+  }
+
+  int x, y;
 
   if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
     // image will scale, make sure placement is right

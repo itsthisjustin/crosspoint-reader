@@ -5,6 +5,8 @@
 #include <SDCardManager.h>
 #include <expat.h>
 
+#include "Epub.h"
+#include "../EpubImageConverter.h"
 #include "../Page.h"
 #include "../htmlEntities.h"
 
@@ -65,8 +67,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   }
 
   if (matches(name, IMAGE_TAGS, NUM_IMAGE_TAGS)) {
-    // TODO: Start processing image tags
-    self->skipUntilDepth = self->depth;
+    self->processImageTag(atts);
     self->depth += 1;
     return;
   }
@@ -344,4 +345,72 @@ void ChapterHtmlSlimParser::makePages() {
   if (extraParagraphSpacing) {
     currentPageNextY += lineHeight / 2;
   }
+}
+
+void ChapterHtmlSlimParser::processImageTag(const XML_Char** atts) {
+  if (!epub) {
+    Serial.printf("[%lu] [EHP] Cannot process image: no EPUB reference\n", millis());
+    return;
+  }
+
+  // Find src attribute
+  std::string src;
+  if (atts != nullptr) {
+    for (int i = 0; atts[i]; i += 2) {
+      if (strcmp(atts[i], "src") == 0) {
+        src = atts[i + 1];
+        break;
+      }
+    }
+  }
+
+  if (src.empty()) {
+    Serial.printf("[%lu] [EHP] Image tag has no src attribute\n", millis());
+    return;
+  }
+
+  // Flush any pending text before the image
+  if (currentTextBlock && !currentTextBlock->isEmpty()) {
+    makePages();
+  }
+
+  // Extract and convert the image
+  const auto imageInfo = EpubImageConverter::extractAndConvert(*epub, chapterPath, src, viewportWidth);
+  if (!imageInfo.success) {
+    Serial.printf("[%lu] [EHP] Failed to convert image: %s\n", millis(), src.c_str());
+    return;
+  }
+
+  // Create ImageBlock and add to page
+  auto imageBlock = std::make_shared<ImageBlock>(imageInfo.bmpPath, imageInfo.width, imageInfo.height);
+  addImageToPage(imageBlock);
+}
+
+void ChapterHtmlSlimParser::addImageToPage(std::shared_ptr<ImageBlock> imageBlock) {
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  const int imageHeight = imageBlock->getHeight();
+
+  // Check if image fits on current page
+  if (currentPageNextY + imageHeight > viewportHeight) {
+    // Image doesn't fit, start new page
+    completePageFn(std::move(currentPage));
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  // Center the image horizontally
+  const int imageWidth = imageBlock->getWidth();
+  const int16_t xPos = (viewportWidth - imageWidth) / 2;
+
+  currentPage->elements.push_back(
+      std::make_shared<PageImage>(imageBlock, xPos, currentPageNextY, imageWidth, imageHeight));
+  currentPageNextY += imageHeight;
+
+  // Add some spacing after the image
+  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  currentPageNextY += lineHeight / 2;
 }
